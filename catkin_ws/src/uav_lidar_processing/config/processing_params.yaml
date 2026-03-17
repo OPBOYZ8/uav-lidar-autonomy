@@ -1,0 +1,46 @@
+# UAV LiDAR Stack - LiDAR Processing Parameters
+# ================================================
+# Loaded by lidar_processor_node via ROS parameter server.
+#
+# All units in metres and radians unless otherwise noted.
+
+lidar_processor:
+  ros__parameters:
+
+    # -- Input / Output Topics --
+    input_topic:  /velodyne_points   # Raw VLP-16 PointCloud2
+    cloud_topic:  /cloud_filtered    # Filtered 3D PointCloud2 output
+    scan_topic:   /scan              # 2D LaserScan output (for hector_mapping)
+
+    # -- PassThrough Z Filter (sensor frame) --
+    # Removes ground plane returns (below drone body) and overhead clutter.
+    # Sensor is ~0.14m above base_link; set z_min slightly below to keep
+    # points at the scan height relative to sensor origin.
+    z_min:  -0.5    # Minimum Z to keep (metres, sensor frame)
+    z_max:   2.0    # Maximum Z to keep (metres, sensor frame)
+
+    # -- Range Filter --
+    # min_range: removes own-body returns from drone structure
+    # max_range: clips very distant returns that add noise to SLAM
+    min_range:  0.5    # metres
+    max_range:  50.0   # metres
+
+    # -- Voxel Grid Downsampling --
+    # Reduces point count to manageable level for real-time processing.
+    # 0.10m is a good balance between map detail and CPU load.
+    voxel_size:  0.10   # metres (leaf size)
+
+    # -- Horizontal Scan Extraction --
+    # The VLP-16 produces 3D data; hector_mapping needs a 2D LaserScan.
+    # scan_z_min/max define the Z slice (in sensor frame) projected to 2D.
+    # At 1.5m flight height, 0m sensor frame ≈ wall mid-height: good features.
+    scan_z_min:  -0.15   # metres, sensor frame
+    scan_z_max:   0.15   # metres, sensor frame
+
+    # -- LaserScan Parameters --
+    angle_min:       -3.14159265   # -180°
+    angle_max:        3.14159265   # +180°
+    angle_increment:  0.003490659  # 0.2° per bin = 1800 bins
+    scan_range_min:   0.1          # metres
+    scan_range_max:  50.0          # metres
+    scan_time:        0.1          # seconds (10 Hz VLP-16)

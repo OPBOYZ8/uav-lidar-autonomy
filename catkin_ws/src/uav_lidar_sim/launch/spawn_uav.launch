@@ -1,0 +1,77 @@
+<!--
+  UAV LiDAR Stack - UAV Simulation Launch
+  =========================================
+  Launches:
+    1. Gazebo with the warehouse world
+    2. Robot state publisher (URDF → TF)
+    3. Gazebo model spawner (places drone in world)
+
+  Key ROS topics published after this launch:
+    /velodyne_points   (sensor_msgs/PointCloud2)  - 3D LiDAR point cloud
+    /imu/data          (sensor_msgs/Imu)           - IMU data
+    /ground_truth/odom (nav_msgs/Odometry)         - Ground truth pose
+    /robot_description (std_msgs/String)           - URDF content
+    /tf                                            - TF tree
+-->
+<launch>
+
+  <!-- ===== Arguments ===== -->
+  <arg name="world"     default="$(find uav_lidar_sim)/worlds/warehouse.world"/>
+  <arg name="x_init"   default="0.0"/>
+  <arg name="y_init"   default="0.0"/>
+  <arg name="z_init"   default="1.5"/>   <!-- Drone spawn height in meters -->
+  <arg name="yaw_init" default="0.0"/>
+  <arg name="paused"   default="false"/>
+  <arg name="use_sim_time" default="true"/>
+  <arg name="gui"      default="true"/>   <!-- Set false for headless mode -->
+  <arg name="debug"    default="false"/>
+  <arg name="verbose"  default="false"/>
+
+  <!-- ===== Sim time ===== -->
+  <param name="use_sim_time" value="$(arg use_sim_time)"/>
+
+  <!-- ===== URDF / Robot Description ===== -->
+  <!-- Parse the Xacro URDF and upload to parameter server -->
+  <param name="robot_description"
+         command="$(find xacro)/xacro $(find uav_lidar_sim)/urdf/quadrotor_lidar.urdf.xacro"/>
+
+  <!-- ===== Gazebo ===== -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name"  value="$(arg world)"/>
+    <arg name="paused"      value="$(arg paused)"/>
+    <arg name="use_sim_time" value="$(arg use_sim_time)"/>
+    <arg name="gui"         value="$(arg gui)"/>
+    <arg name="debug"       value="$(arg debug)"/>
+    <arg name="verbose"     value="$(arg verbose)"/>
+  </include>
+
+  <!-- ===== Spawn UAV model in Gazebo ===== -->
+  <node name="spawn_uav" pkg="gazebo_ros" type="spawn_model"
+        output="screen"
+        args="-urdf
+              -model uav_lidar
+              -param robot_description
+              -x $(arg x_init)
+              -y $(arg y_init)
+              -z $(arg z_init)
+              -Y $(arg yaw_init)"/>
+
+  <!-- ===== Robot State Publisher ===== -->
+  <!-- Converts URDF joints to TF frames (base_link → velodyne, etc.) -->
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher" output="screen">
+    <param name="publish_frequency" value="50.0"/>
+    <param name="use_tf_static" value="true"/>
+  </node>
+
+  <!-- ===== Joint State Publisher ===== -->
+  <!-- Publishes zero joint states for continuous joints (rotors) -->
+  <node name="joint_state_publisher" pkg="joint_state_publisher"
+        type="joint_state_publisher" output="screen">
+    <param name="publish_default_efforts" value="false"/>
+    <param name="publish_default_velocities" value="false"/>
+    <param name="publish_default_positions" value="true"/>
+    <param name="rate" value="50"/>
+  </node>
+
+</launch>

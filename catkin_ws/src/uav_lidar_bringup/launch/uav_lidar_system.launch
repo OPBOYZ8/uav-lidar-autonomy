@@ -1,0 +1,267 @@
+<!--
+  UAV LiDAR Stack — SINGLE MASTER LAUNCH FILE (fully self-contained)
+  ====================================================================
+  Starts the complete system in one command:
+
+    source /opt/ros/noetic/setup.bash
+    source ~/robotics_projects/uav_lidar_stack/catkin_ws/devel/setup.bash
+    roslaunch uav_lidar_bringup uav_lidar_system.launch
+
+  Everything is inline here — no <include> chains.
+
+  ── What gets launched ────────────────────────────────────────────────
+  1. Gazebo 11           warehouse world + physics
+  2. UAV model           xacro URDF → param server → spawn_model
+  3. robot_state_pub     URDF joints → TF (base_link → velodyne, etc.)
+  4. joint_state_pub     publishes zero joint states for rotors
+  5. lidar_processor     /velodyne_points → /cloud_filtered + /scan
+  6. obstacle_map_node   /scan + /ground_truth/odom → /map (2 Hz)
+  7. uav_navigator       /scan + /map → SetModelState (50 Hz)
+  8. RViz                pre-configured visualisation (optional)
+
+  ── Topic pipeline ────────────────────────────────────────────────────
+  Gazebo VLP-16 plugin
+      → /velodyne_points (PointCloud2, 10 Hz)
+      → lidar_processor_node
+          → /cloud_filtered (PointCloud2)
+          → /scan           (LaserScan)
+              → obstacle_map_node → /map (OccupancyGrid, 2 Hz)
+              → uav_navigator (A* on /map + PF on /scan)
+                  → /gazebo/set_model_state  (drone moves)
+                  → /uav/pose  /uav/path  /uav/nav_debug
+
+  ── Override any argument on the command line ─────────────────────────
+    roslaunch uav_lidar_bringup uav_lidar_system.launch \
+        goal_x:=6 goal_y:=-3 cruise_speed:=1.2
+
+    # Headless (WSL without display):
+    roslaunch uav_lidar_bringup uav_lidar_system.launch gui:=false rviz:=false
+
+  ── Sensor blindspot fix (applied in this stack) ──────────────────────
+  VLP-16 plugin min_range was 0.9 m → changed to 0.2 m in URDF.
+  lidar_processor min_range was 0.5 m → changed to 0.3 m below.
+  Navigator has per-sector obstacle memory (CLEAR_RATE 0.5 m/s).
+  Together these prevent the "all-clear at 0.89 m" crash bug.
+-->
+<launch>
+
+  <!-- ==================================================================
+       GLOBAL ARGUMENTS
+       ================================================================== -->
+
+  <!-- Display / headless -->
+  <arg name="gui"               default="true"  doc="Show Gazebo GUI window"/>
+  <arg name="rviz"              default="true"  doc="Launch RViz visualisation"/>
+  <arg name="use_sim_time"      default="true"/>
+
+  <!-- Mission: long SW→NE diagonal that crosses racks, boxes, pillars -->
+  <arg name="start_x"          default="-5.0"  doc="Start X (m), world frame"/>
+  <arg name="start_y"          default="-5.0"  doc="Start Y (m), world frame"/>
+  <arg name="start_z"          default=" 1.5"  doc="Cruise altitude (m)"/>
+  <arg name="goal_x"           default=" 5.0"  doc="Goal X (m), world frame"/>
+  <arg name="goal_y"           default=" 5.0"  doc="Goal Y (m), world frame"/>
+  <arg name="goal_z"           default=" 1.5"  doc="Goal altitude (m)"/>
+
+  <!-- Navigation tuning knobs -->
+  <arg name="cruise_speed"      default="1.8"   doc="Normal forward speed (m/s)"/>
+  <arg name="max_speed"         default="3.0"   doc="Hard speed cap (m/s)"/>
+  <arg name="safety_distance"   default="1.0"   doc="Repulsion starts at this range (m)"/>
+  <arg name="avoidance_gain"    default="2.5"   doc="Peak repulsion velocity (m/s)"/>
+  <arg name="hard_stop_distance" default="0.55" doc="M-line zeroed at this range (m)"/>
+  <arg name="goal_tolerance"    default="0.4"   doc="Arrival radius (m)"/>
+
+  <!-- Toggle autonomous flight (set false for manual teleop only) -->
+  <arg name="enable_trajectory" default="true"/>
+
+  <!-- Sim time -->
+  <param name="use_sim_time" value="$(arg use_sim_time)"/>
+
+  <!-- ==================================================================
+       BLOCK 1 — GAZEBO SIMULATION
+       Warehouse world + physics
+       ================================================================== -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name"   value="$(find uav_lidar_sim)/worlds/warehouse.world"/>
+    <arg name="paused"       value="false"/>
+    <arg name="use_sim_time" value="$(arg use_sim_time)"/>
+    <arg name="gui"          value="$(arg gui)"/>
+    <arg name="debug"        value="false"/>
+    <arg name="verbose"      value="false"/>
+  </include>
+
+  <!-- ==================================================================
+       BLOCK 2 — UAV MODEL
+       Parse xacro → upload URDF → spawn drone in Gazebo
+       ================================================================== -->
+
+  <!-- Parse xacro and upload URDF to parameter server -->
+  <param name="robot_description"
+         command="$(find xacro)/xacro $(find uav_lidar_sim)/urdf/quadrotor_lidar.urdf.xacro"/>
+
+  <!-- Spawn drone at the mission start position -->
+  <node name="spawn_uav" pkg="gazebo_ros" type="spawn_model"
+        output="screen"
+        args="-urdf
+              -model uav_lidar
+              -param robot_description
+              -x $(arg start_x)
+              -y $(arg start_y)
+              -z $(arg start_z)
+              -Y 0.0"/>
+
+  <!-- Publish URDF joint TF tree (base_link → velodyne, imu_link, etc.) -->
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher" output="screen">
+    <param name="publish_frequency" value="50.0"/>
+    <param name="use_tf_static"     value="true"/>
+  </node>
+
+  <!-- Publish zero joint states for continuous rotor joints -->
+  <node name="joint_state_publisher" pkg="joint_state_publisher"
+        type="joint_state_publisher" output="screen">
+    <param name="publish_default_positions"  value="true"/>
+    <param name="publish_default_velocities" value="false"/>
+    <param name="publish_default_efforts"    value="false"/>
+    <param name="rate"                       value="50"/>
+  </node>
+
+  <!-- ==================================================================
+       BLOCK 3 — LIDAR PROCESSOR
+       /velodyne_points (PointCloud2) → /cloud_filtered + /scan (LaserScan)
+
+       Processing steps:
+         1. PassThrough Z filter  — strip ground returns and above-sensor hits
+         2. Range filter          — remove own-body returns (< min_range)
+         3. Voxel downsample      — reduce CPU load on downstream nodes
+         4. Horizontal slice      — project to 2D LaserScan for SLAM + avoidance
+
+       Sensor blindspot fix: min_range was 0.5 m → 0.3 m.
+       The VLP-16 plugin min_range was also fixed (0.9 → 0.2 m in URDF),
+       so walls are now visible right down to 0.3 m.
+       ================================================================== -->
+  <node name="lidar_processor" pkg="uav_lidar_processing"
+        type="lidar_processor_node.py" output="screen">
+
+    <!-- Z pass-through filter (sensor frame) -->
+    <param name="z_min"           value="-0.5"/>
+    <param name="z_max"           value=" 2.5"/>
+
+    <!-- Range filter: 0.45 m filters all motor-housing (3-D range ~0.306 m) and
+         rotor-tip (3-D range ~0.433 m) self-returns while passing wall returns
+         down to 0.45 m — well below hard_stop_distance = 0.55 m. -->
+    <param name="min_range"       value="0.45"/>
+    <param name="max_range"       value="50.0"/>
+
+    <!-- Voxel downsampling leaf size (m) -->
+    <param name="voxel_size"      value="0.10"/>
+
+    <!-- LaserScan horizontal slice — ±0.30 m around sensor Z -->
+    <param name="scan_z_min"      value="-0.30"/>
+    <param name="scan_z_max"      value=" 0.30"/>
+
+    <!-- LaserScan angular parameters: full 360° at 0.2° resolution -->
+    <param name="angle_min"       value="-3.14159265"/>
+    <param name="angle_max"       value=" 3.14159265"/>
+    <param name="angle_increment" value="0.003490659"/>
+
+    <!-- LaserScan range limits -->
+    <param name="scan_range_min"  value="0.1"/>
+    <param name="scan_range_max"  value="50.0"/>
+    <param name="scan_time"       value="0.1"/>
+
+    <!-- Topic remapping -->
+    <param name="input_topic"     value="/velodyne_points"/>
+    <param name="cloud_topic"     value="/cloud_filtered"/>
+    <param name="scan_topic"      value="/scan"/>
+  </node>
+
+  <!-- ==================================================================
+       BLOCK 4 — OBSTACLE MAP
+       /scan + /ground_truth/odom → /map (nav_msgs/OccupancyGrid, 2 Hz)
+
+       Python occupancy grid node.  Replaces hector_mapping which crashed
+       with SIGSEGV on infinite scan values.
+       Grid: 320×320 cells, 0.05 m/cell → ±8 m coverage (matches warehouse).
+       Uses log-odds Bresenham ray-casting; no TF or C++ dependencies.
+       ================================================================== -->
+  <node name="obstacle_map_node" pkg="uav_lidar_processing"
+        type="obstacle_map_node.py" output="screen">
+    <param name="publish_rate"  value="2.0"   doc="Map publish rate (Hz)"/>
+    <param name="max_range"     value="12.0"  doc="Max usable sensor range for mapping (m)"/>
+    <param name="scan_stride"   value="2"     doc="Use every Nth ray (1=all, 2=half for speed)"/>
+    <param name="decay_rate"    value="0.0"   doc="Log-odds decay per tick (0=no time decay)"/>
+  </node>
+
+  <!-- ==================================================================
+       BLOCK 5 — UAV NAVIGATOR
+       /scan + /map → /gazebo/set_model_state (50 Hz kinematic control)
+
+       Two-layer architecture:
+         Layer 1 (50 Hz): M-line attraction + LiDAR potential field + boundary repulsion
+           - RC1: EMA alpha 0.65 for fast avoidance response (40 ms)
+           - RC2: Wide-cone soft-stop (±70° effective cone) catches angled walls
+           - RC3: Narrow corridor backward pressure (prevents end-wall collision)
+           - RC4: Dual-criterion stuck detection (speed + position spread)
+           - RC5: 3-phase LiDAR-active recovery (back-off → lateral → cooldown)
+           - RC6: Proximity-aware cruise speed (min 30% near obstacles)
+           - NEW: Per-sector obstacle memory (CLEAR_RATE 0.5 m/s) — absorbs
+                  100 ms scan latency and residual sensor blindspot noise.
+
+         Layer 2 (0.2 Hz): A* on /map — path for RViz + local minima recovery ref
+
+       Debug topics published:
+         /uav/nav_debug  (std_msgs/String)  — 2 Hz text: pos, goal dist, sectors
+         /uav/path       (nav_msgs/Path)    — A* route for RViz
+         /uav/pose       (PoseStamped)      — current navigator position
+       ================================================================== -->
+  <node name="uav_navigator" pkg="uav_lidar_processing"
+        type="uav_navigator.py" output="screen"
+        if="$(arg enable_trajectory)">
+
+    <!-- Gazebo model identity -->
+    <param name="model_name"          value="uav_lidar"/>
+    <param name="reference_frame"     value="world"/>
+    <param name="update_rate"         value="50.0"/>
+
+    <!-- Wait for Gazebo to fully settle before starting -->
+    <param name="start_delay"         value="5.0"/>
+
+    <!-- Mission start + goal (forwarded from global args) -->
+    <param name="start_x"             value="$(arg start_x)"/>
+    <param name="start_y"             value="$(arg start_y)"/>
+    <param name="start_z"             value="$(arg start_z)"/>
+    <param name="goal_x"              value="$(arg goal_x)"/>
+    <param name="goal_y"              value="$(arg goal_y)"/>
+    <param name="goal_z"              value="$(arg goal_z)"/>
+
+    <!-- Navigation tuning (forwarded from global args) -->
+    <param name="cruise_speed"        value="$(arg cruise_speed)"/>
+    <param name="safety_distance"     value="$(arg safety_distance)"/>
+    <param name="avoidance_gain"      value="$(arg avoidance_gain)"/>
+    <param name="hard_stop_distance"  value="$(arg hard_stop_distance)"/>
+    <param name="max_speed"           value="$(arg max_speed)"/>
+    <param name="goal_tolerance"      value="$(arg goal_tolerance)"/>
+
+    <!-- A* background replanner rate (Hz) -->
+    <param name="replan_rate"         value="0.2"/>
+
+    <!-- M-line lateral correction gain -->
+    <param name="mline_gain"          value="1.0"/>
+
+    <!-- RC1: EMA factor for avoidance velocity smoothing.
+         0.65 gives 40 ms response time (was 0.35 → 100 ms → 18 cm overshoot). -->
+    <param name="smooth_alpha"        value="0.65"/>
+  </node>
+
+  <!-- ==================================================================
+       BLOCK 6 — RVIZ VISUALISATION
+       Pre-configured layout showing all data streams simultaneously.
+       Disable with rviz:=false for headless / WSL without X server.
+       ================================================================== -->
+  <node name="rviz" pkg="rviz" type="rviz" output="screen"
+        args="-d $(find uav_lidar_bringup)/config/rviz/uav_lidar.rviz"
+        if="$(arg rviz)">
+    <param name="use_sim_time" value="$(arg use_sim_time)"/>
+  </node>
+
+</launch>

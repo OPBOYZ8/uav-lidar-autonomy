@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>uav_lidar_bringup</name>
+  <version>1.0.0</version>
+  <description>
+    System bringup package for the UAV LiDAR stack. Provides the master launch
+    file that orchestrates all subsystems: simulation, LiDAR processing, SLAM,
+    visualization, and the drone trajectory controller.
+  </description>
+  <maintainer email="hamza@uav-lidar.local">Hamza</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <exec_depend>uav_lidar_sim</exec_depend>
+  <exec_depend>uav_lidar_processing</exec_depend>
+  <exec_depend>uav_lidar_mapping</exec_depend>
+  <exec_depend>rviz</exec_depend>
+  <exec_depend>rospy</exec_depend>
+</package>

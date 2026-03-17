@@ -1,0 +1,123 @@
+<!--
+  UAV LiDAR Stack — LiDAR Processing + Navigation Launch
+  =======================================================
+  Launches the full perception + navigation pipeline:
+    1. lidar_processor_node  — PassThrough + voxel filter + LaserScan extraction
+    2. obstacle_map_node     — Python 2D occupancy grid (replaces hector_mapping)
+    3. uav_navigator         — Goal-directed navigator with A* + potential field
+
+  Input:  /velodyne_points        (sensor_msgs/PointCloud2)
+  Output: /cloud_filtered         (sensor_msgs/PointCloud2)
+          /scan                   (sensor_msgs/LaserScan)
+          /map                    (nav_msgs/OccupancyGrid)
+          /uav/pose               (geometry_msgs/PoseStamped)
+          /uav/path               (nav_msgs/Path)
+          /uav/nav_debug          (std_msgs/String)
+-->
+<launch>
+
+  <!-- ===== Arguments ===== -->
+  <arg name="use_sim_time"         default="true"/>
+  <arg name="enable_trajectory"    default="true"
+       doc="Set false to disable autonomous flight — manual control only"/>
+
+  <!-- Start and goal poses (long SW→NE diagonal through obstacle field) -->
+  <arg name="start_x"             default="-5.0"  doc="Start X position (m)"/>
+  <arg name="start_y"             default="-5.0"  doc="Start Y position (m)"/>
+  <arg name="start_z"             default=" 1.5"  doc="Cruise altitude (m)"/>
+  <arg name="goal_x"              default=" 5.0"  doc="Goal X position (m)"/>
+  <arg name="goal_y"              default=" 5.0"  doc="Goal Y position (m)"/>
+  <arg name="goal_z"              default=" 1.5"  doc="Goal altitude (m)"/>
+
+  <!-- Navigation tuning (wall-hardened defaults) -->
+  <arg name="cruise_speed"         default="1.8"
+       doc="Nominal forward speed (m/s)"/>
+  <arg name="safety_distance"      default="1.0"
+       doc="Obstacle repulsion activation distance (m); target clearance ~= hard_stop_distance"/>
+  <arg name="avoidance_gain"       default="2.5"
+       doc="Peak repulsion speed at distance=0 (m/s); RC1: raised from 2.0 to match alpha=0.65"/>
+  <arg name="hard_stop_distance"   default="0.55"
+       doc="Forward attraction ramps to 0 at this distance (m); RC1: tightened from 0.6 to 0.55"/>
+  <arg name="max_speed"            default="3.0"
+       doc="Total speed cap (m/s)"/>
+  <arg name="goal_tolerance"       default="0.4"
+       doc="Arrival radius — mission complete within this distance of goal (m)"/>
+
+  <param name="use_sim_time" value="$(arg use_sim_time)"/>
+
+  <!-- ===== 1. LiDAR Processor Node ===== -->
+  <node name="lidar_processor" pkg="uav_lidar_processing"
+        type="lidar_processor_node.py" output="screen">
+    <!-- PassThrough Z filter (sensor frame) -->
+    <param name="z_min"           value="-0.5"/>
+    <param name="z_max"           value=" 2.5"/>
+    <!-- Range filter.
+         min_range raised to 0.45 m to suppress motor-housing self-returns.
+         Geometry: motor housings sit at diagonal 0.297 m from body centre,
+         0.0735 m below the VLP-16 — 3-D range 0.306 m.  With Gaussian noise
+         (σ = 0.008 m) returns can be as low as 0.290 m, landing in the LF and
+         RF sectors (motors are at ±45° body-frame diagonal).  A min_range of
+         0.45 m filters all motor returns (max 3D range ~0.322 m) and rotor-tip
+         returns (~0.433 m), while passing real wall returns down to 0.45 m —
+         comfortably below hard_stop_distance = 0.55 m. -->
+    <param name="min_range"       value="0.45"/>
+    <param name="max_range"       value="50.0"/>
+    <!-- Voxel downsampling leaf size -->
+    <param name="voxel_size"      value="0.10"/>
+    <!-- LaserScan horizontal slice (sensor frame Z) -->
+    <param name="scan_z_min"      value="-0.30"/>
+    <param name="scan_z_max"      value=" 0.30"/>
+    <!-- LaserScan azimuth range and resolution -->
+    <param name="angle_min"       value="-3.14159265"/>
+    <param name="angle_max"       value=" 3.14159265"/>
+    <param name="angle_increment" value="0.003490659"/>
+    <!-- LaserScan range limits -->
+    <param name="scan_range_min"  value="0.1"/>
+    <param name="scan_range_max"  value="50.0"/>
+    <param name="scan_time"       value="0.1"/>
+    <!-- Topic names -->
+    <param name="input_topic"     value="/velodyne_points"/>
+    <param name="cloud_topic"     value="/cloud_filtered"/>
+    <param name="scan_topic"      value="/scan"/>
+  </node>
+
+  <!-- ===== 2. Obstacle Map Node (replaces hector_mapping) ===== -->
+  <node name="obstacle_map_node" pkg="uav_lidar_processing"
+        type="obstacle_map_node.py" output="screen">
+    <param name="publish_rate"  value="2.0"   doc="Map publish rate (Hz)"/>
+    <param name="max_range"     value="12.0"  doc="Max sensor range for mapping (m)"/>
+    <param name="scan_stride"   value="2"     doc="Use every Nth ray (1=all, 2=half)"/>
+    <param name="decay_rate"    value="0.0"   doc="Log-odds decay per tick (0=no decay)"/>
+  </node>
+
+  <!-- ===== 3. UAV Navigator ===== -->
+  <node name="uav_navigator" pkg="uav_lidar_processing"
+        type="uav_navigator.py" output="screen"
+        if="$(arg enable_trajectory)">
+    <!-- Model -->
+    <param name="model_name"          value="uav_lidar"/>
+    <param name="reference_frame"     value="world"/>
+    <param name="update_rate"         value="50.0"/>
+    <param name="start_delay"         value="5.0"/>
+    <!-- Mission poses -->
+    <param name="start_x"             value="$(arg start_x)"/>
+    <param name="start_y"             value="$(arg start_y)"/>
+    <param name="start_z"             value="$(arg start_z)"/>
+    <param name="goal_x"              value="$(arg goal_x)"/>
+    <param name="goal_y"              value="$(arg goal_y)"/>
+    <param name="goal_z"              value="$(arg goal_z)"/>
+    <!-- Navigation tuning -->
+    <param name="cruise_speed"        value="$(arg cruise_speed)"/>
+    <param name="safety_distance"     value="$(arg safety_distance)"/>
+    <param name="avoidance_gain"      value="$(arg avoidance_gain)"/>
+    <param name="hard_stop_distance"  value="$(arg hard_stop_distance)"/>
+    <param name="max_speed"           value="$(arg max_speed)"/>
+    <param name="goal_tolerance"      value="$(arg goal_tolerance)"/>
+    <!-- A* replanning rate (background; result used for viz + escape backup) -->
+    <param name="replan_rate"         value="0.2"  doc="A* replan frequency (Hz)"/>
+    <!-- M-line tracking (oscillation fix) -->
+    <param name="mline_gain"          value="1.0"  doc="Lateral pull strength back toward start-goal line"/>
+    <param name="smooth_alpha"        value="0.65" doc="EMA factor for avoidance velocity; RC1: raised from 0.35 to 0.65 for faster wall response"/>
+  </node>
+
+</launch>

@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>uav_lidar_sim</name>
+  <version>1.0.0</version>
+  <description>
+    UAV LiDAR simulation package. Contains the quadrotor URDF model with
+    mounted Velodyne VLP-16 LiDAR, Gazebo worlds, and spawn launch files.
+  </description>
+  <maintainer email="hamza@uav-lidar.local">Hamza</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>xacro</build_depend>
+  <build_depend>robot_state_publisher</build_depend>
+
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>joint_state_publisher</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>gazebo_plugins</exec_depend>
+  <exec_depend>velodyne_description</exec_depend>
+  <exec_depend>velodyne_gazebo_plugins</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+</package>

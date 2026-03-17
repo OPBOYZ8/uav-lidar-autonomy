@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>uav_lidar_mapping</name>
+  <version>1.0.0</version>
+  <description>
+    UAV LiDAR SLAM and mapping package. Configures and launches hector_mapping
+    for LiDAR-only SLAM (no odometry required), suitable for aerial vehicles.
+    Also provides map saver utilities for persisting maps to disk.
+  </description>
+  <maintainer email="hamza@uav-lidar.local">Hamza</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <exec_depend>hector_mapping</exec_depend>
+  <exec_depend>hector_slam_launch</exec_depend>
+  <exec_depend>map_server</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+</package>

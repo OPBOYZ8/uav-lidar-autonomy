@@ -1,0 +1,381 @@
+<?xml version="1.0"?>
+<!--
+  UAV LiDAR Stack - Quadrotor with Velodyne VLP-16 LiDAR
+  =========================================================
+  URDF/Xacro model of a quadrotor UAV with:
+    - Rigid body chassis (flat box)
+    - 4 diagonal arms (box geometry, oriented via rpy)
+    - 4 motor housings + spinning rotor disks
+    - Velodyne VLP-16 LiDAR sensor mounted on top
+    - IMU sensor at body center
+    - Ground-truth odometry (libgazebo_ros_p3d)
+    - Drone pose is controlled externally via /gazebo/set_model_state service
+
+  Coordinate convention (REP-103):
+    X forward, Y left, Z up (FLU)
+    Body frame origin at chassis geometric center.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="uav_lidar">
+
+  <!-- ============================================================
+       GLOBAL MATERIAL DEFINITIONS
+       ============================================================ -->
+  <material name="chassis_orange">
+    <color rgba="1.0 0.45 0.0 1.0"/>
+  </material>
+  <material name="dark_grey">
+    <color rgba="0.2 0.2 0.2 1.0"/>
+  </material>
+  <material name="black">
+    <color rgba="0.05 0.05 0.05 1.0"/>
+  </material>
+  <material name="light_grey">
+    <color rgba="0.7 0.7 0.7 0.6"/>
+  </material>
+  <material name="blue_grey">
+    <color rgba="0.4 0.4 0.6 0.6"/>
+  </material>
+  <material name="velodyne_black">
+    <color rgba="0.1 0.1 0.1 1.0"/>
+  </material>
+  <material name="mount_grey">
+    <color rgba="0.5 0.5 0.5 1.0"/>
+  </material>
+  <material name="white">
+    <color rgba="0.9 0.9 0.9 1.0"/>
+  </material>
+
+  <!-- ============================================================
+       REUSABLE MACROS
+       ============================================================ -->
+
+  <!-- Null inertial for visual-only links -->
+  <xacro:macro name="null_inertial">
+    <inertial>
+      <mass value="0.001"/>
+      <inertia ixx="0.000001" ixy="0" ixz="0" iyy="0.000001" iyz="0" izz="0.000001"/>
+    </inertial>
+  </xacro:macro>
+
+  <!--
+    Rotor arm assembly macro.
+    Creates: arm box link + motor cylinder + continuous rotor disk joint.
+    Parameters:
+      name     : prefix for all generated links/joints
+      pos_x    : X offset of rotor from body centre (m)
+      pos_y    : Y offset of rotor from body centre (m)
+      arm_rpy  : rpy to orient arm box in XY plane (e.g. "0 0 0.785" for 45°)
+      mat_name : material name for rotor disk ('blue_grey' CW, 'light_grey' CCW)
+  -->
+  <xacro:macro name="rotor_assembly" params="name pos_x pos_y arm_rpy mat_name">
+
+    <!-- Diagonal arm link (box, oriented by arm_rpy) -->
+    <link name="${name}_arm">
+      <visual>
+        <origin xyz="${pos_x * 0.5} ${pos_y * 0.5} 0.002" rpy="${arm_rpy}"/>
+        <geometry>
+          <!-- 0.30m long arm, 0.020m wide, 0.010m tall -->
+          <box size="0.30 0.020 0.010"/>
+        </geometry>
+        <material name="dark_grey"/>
+      </visual>
+      <xacro:null_inertial/>
+    </link>
+    <joint name="${name}_arm_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="${name}_arm"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+
+    <!-- Motor housing cylinder -->
+    <link name="${name}_motor">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="0.015" length="0.025"/>
+        </geometry>
+        <material name="black"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="0.015" length="0.025"/>
+        </geometry>
+      </collision>
+      <xacro:null_inertial/>
+    </link>
+    <joint name="${name}_motor_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="${name}_motor"/>
+      <origin xyz="${pos_x} ${pos_y} 0.005" rpy="0 0 0"/>
+    </joint>
+
+    <!-- Spinning rotor disk (continuous joint for animation) -->
+    <link name="${name}_rotor">
+      <visual>
+        <origin xyz="0 0 0.004" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="0.13" length="0.004"/>
+        </geometry>
+        <material name="${mat_name}"/>
+      </visual>
+      <xacro:null_inertial/>
+    </link>
+    <joint name="${name}_rotor_joint" type="continuous">
+      <parent link="${name}_motor"/>
+      <child link="${name}_rotor"/>
+      <origin xyz="0 0 0.015" rpy="0 0 0"/>
+      <axis xyz="0 0 1"/>
+    </joint>
+
+  </xacro:macro>
+
+  <!-- ============================================================
+       BASE CHASSIS LINK
+       A flat box representing the central frame / electronics bay.
+       Width: 280mm × 280mm × 50mm
+       ============================================================ -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.28 0.28 0.050"/>
+      </geometry>
+      <material name="chassis_orange"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.28 0.28 0.050"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <!-- Total drone mass ~1.4 kg, including battery and electronics -->
+      <mass value="1.4"/>
+      <!-- Thin disk inertia approximation for the chassis -->
+      <inertia ixx="0.015" ixy="0.0" ixz="0.0"
+               iyy="0.015" iyz="0.0"
+               izz="0.028"/>
+    </inertial>
+  </link>
+
+  <!-- ============================================================
+       FOUR ROTOR ASSEMBLIES — X configuration
+       Arms point diagonally at ±45° from the X-axis.
+       arm_rpy = "0 0 yaw" where yaw aligns the box along the arm direction.
+
+       FR = Front-Right   (x=+0.21, y=-0.21), arm at -45° = -0.785 rad, CW  rotor
+       FL = Front-Left    (x=+0.21, y=+0.21), arm at +45° = +0.785 rad, CCW rotor
+       RL = Rear-Left     (x=-0.21, y=+0.21), arm at -45° = -0.785 rad, CW  rotor
+       RR = Rear-Right    (x=-0.21, y=-0.21), arm at +45° = +0.785 rad, CCW rotor
+       ============================================================ -->
+  <xacro:rotor_assembly name="rotor_fr" pos_x=" 0.21" pos_y="-0.21"
+                         arm_rpy="0 0 -0.785398" mat_name="blue_grey"/>
+  <xacro:rotor_assembly name="rotor_fl" pos_x=" 0.21" pos_y=" 0.21"
+                         arm_rpy="0 0  0.785398" mat_name="light_grey"/>
+  <xacro:rotor_assembly name="rotor_rl" pos_x="-0.21" pos_y=" 0.21"
+                         arm_rpy="0 0 -0.785398" mat_name="blue_grey"/>
+  <xacro:rotor_assembly name="rotor_rr" pos_x="-0.21" pos_y="-0.21"
+                         arm_rpy="0 0  0.785398" mat_name="light_grey"/>
+
+  <!-- ============================================================
+       LIDAR MOUNT PEDESTAL
+       Raised 40mm above chassis center (25mm half-chassis + 15mm mount half)
+       ============================================================ -->
+  <link name="lidar_mount">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.055" length="0.030"/>
+      </geometry>
+      <material name="mount_grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.055" length="0.030"/>
+      </geometry>
+    </collision>
+    <xacro:null_inertial/>
+  </link>
+  <joint name="lidar_mount_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="lidar_mount"/>
+    <!-- 25mm half-chassis + 15mm half-pedestal = 40mm above centre -->
+    <origin xyz="0 0 0.040" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============================================================
+       VELODYNE VLP-16 BODY LINK
+       Physical dimensions: 103mm diameter, 72mm height.
+       Positioned 51mm above lidar_mount centre.
+       The sensor beam origin is at the velodyne frame origin.
+       ============================================================ -->
+  <link name="velodyne">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.0515" length="0.0717"/>
+      </geometry>
+      <material name="velodyne_black"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.0515" length="0.0717"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <!-- VLP-16 mass: ~830 g -->
+      <mass value="0.83"/>
+      <inertia ixx="0.0005" ixy="0.0" ixz="0.0"
+               iyy="0.0005" iyz="0.0"
+               izz="0.0009"/>
+    </inertial>
+  </link>
+  <joint name="velodyne_joint" type="fixed">
+    <parent link="lidar_mount"/>
+    <child link="velodyne"/>
+    <!-- 15mm mount half + 36mm VLP-16 half = 51mm above mount centre -->
+    <origin xyz="0 0 0.051" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============================================================
+       IMU LINK (co-located with body centre of gravity)
+       ============================================================ -->
+  <link name="imu_link">
+    <xacro:null_inertial/>
+  </link>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============================================================
+       GAZEBO SIMULATION PROPERTIES
+       ============================================================ -->
+
+  <!-- Body: disable gravity so drone hovers at commanded height.
+       Self-collide disabled to prevent rotor-body interference. -->
+  <gazebo reference="base_link">
+    <material>Gazebo/Orange</material>
+    <gravity>false</gravity>
+    <self_collide>false</self_collide>
+    <mu1>0.0</mu1>
+    <mu2>0.0</mu2>
+  </gazebo>
+
+  <gazebo reference="velodyne">
+    <material>Gazebo/Black</material>
+  </gazebo>
+
+  <gazebo reference="lidar_mount">
+    <material>Gazebo/Grey</material>
+  </gazebo>
+
+  <!-- ============================================================
+       VELODYNE VLP-16 SENSOR PLUGIN
+       Simulates the rotating multi-beam LiDAR:
+         - 16 channels, vertical FOV ±15° (2° spacing)
+         - 360° horizontal, 0.2° resolution = 1800 samples/scan
+         - Range: 0.1 m – 100 m with 8mm Gaussian noise
+         - Update rate: 10 Hz
+       Publishes: sensor_msgs/PointCloud2 on /velodyne_points
+       ============================================================ -->
+  <gazebo reference="velodyne">
+    <sensor type="ray" name="velodyne_sensor">
+      <pose>0 0 0 0 0 0</pose>
+      <visualize>false</visualize>
+      <update_rate>10</update_rate>
+      <ray>
+        <scan>
+          <!-- 360° horizontal coverage at 0.2° resolution -->
+          <horizontal>
+            <samples>1800</samples>
+            <resolution>1</resolution>
+            <min_angle>-3.14159265</min_angle>
+            <max_angle> 3.14159265</max_angle>
+          </horizontal>
+          <!-- 16-channel vertical array spanning ±15° -->
+          <vertical>
+            <samples>16</samples>
+            <resolution>1</resolution>
+            <min_angle>-0.26179939</min_angle>  <!-- -15 degrees -->
+            <max_angle> 0.26179939</max_angle>  <!-- +15 degrees -->
+          </vertical>
+        </scan>
+        <range>
+          <min>0.1</min>
+          <max>100.0</max>
+          <resolution>0.001</resolution>
+        </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.008</stddev>
+        </noise>
+      </ray>
+      <!-- Plugin: converts ray sensor output to PointCloud2 message -->
+      <plugin name="gazebo_ros_velodyne_controller"
+              filename="libgazebo_ros_velodyne_laser.so">
+        <topicName>/velodyne_points</topicName>
+        <frameName>velodyne</frameName>
+        <organize_cloud>false</organize_cloud>
+        <!-- min_range lowered from 0.9 to 0.2 m.
+             The original 0.9 m created a sensor blindspot: once the drone was
+             within 0.9 m of ANY obstacle the plugin stopped publishing returns
+             for it, making the navigator see "all clear" (50 m) and accelerate
+             at full cruise speed into the wall.  0.2 m keeps well below the
+             hard_stop (0.55 m) while staying above drone body self-reflections. -->
+        <min_range>0.2</min_range>
+        <max_range>130.0</max_range>
+        <gaussianNoise>0.008</gaussianNoise>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <!-- ============================================================
+       IMU SENSOR PLUGIN
+       Publishes orientation, angular velocity, linear acceleration.
+       Topic: /imu/data (sensor_msgs/Imu, 100 Hz)
+       ============================================================ -->
+  <gazebo reference="imu_link">
+    <sensor name="imu_sensor" type="imu">
+      <always_on>true</always_on>
+      <update_rate>100</update_rate>
+      <visualize>false</visualize>
+      <plugin filename="libgazebo_ros_imu_sensor.so" name="imu_plugin">
+        <topicName>/imu/data</topicName>
+        <bodyName>imu_link</bodyName>
+        <updateRateHZ>100.0</updateRateHZ>
+        <gaussianNoise>0.0</gaussianNoise>
+        <xyzOffset>0 0 0</xyzOffset>
+        <rpyOffset>0 0 0</rpyOffset>
+        <frameName>imu_link</frameName>
+        <initialOrientationAsReference>false</initialOrientationAsReference>
+      </plugin>
+      <pose>0 0 0 0 0 0</pose>
+    </sensor>
+  </gazebo>
+
+  <!-- ============================================================
+       GROUND TRUTH POSE PUBLISHER (P3D)
+       Publishes world-frame pose as nav_msgs/Odometry.
+       Topic: /ground_truth/odom (50 Hz, zero noise)
+       Used by drone_waypoint_controller and for SLAM evaluation.
+       ============================================================ -->
+  <gazebo>
+    <plugin name="p3d_base_controller" filename="libgazebo_ros_p3d.so">
+      <alwaysOn>true</alwaysOn>
+      <updateRate>50.0</updateRate>
+      <bodyName>base_link</bodyName>
+      <topicName>/ground_truth/odom</topicName>
+      <gaussianNoise>0.0</gaussianNoise>
+      <frameName>world</frameName>
+      <xyzOffsets>0 0 0</xyzOffsets>
+      <rpyOffsets>0 0 0</rpyOffsets>
+    </plugin>
+  </gazebo>
+
+</robot>
